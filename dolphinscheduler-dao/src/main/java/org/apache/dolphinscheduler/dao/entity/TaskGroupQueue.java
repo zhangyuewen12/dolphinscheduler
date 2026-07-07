@@ -55,7 +55,7 @@ public class TaskGroupQueue implements Serializable {
     @TableField(exist = false)
     private String workflowInstanceName;
 
-    private int groupId;
+    private long groupId;
 
     private Integer workflowInstanceId;
 

@@ -24,6 +24,7 @@ import org.apache.dolphinscheduler.plugin.registry.jdbc.repository.JdbcRegistryL
 import org.apache.dolphinscheduler.plugin.registry.jdbc.server.IJdbcRegistryServer;
 import org.apache.dolphinscheduler.plugin.registry.jdbc.server.JdbcRegistryServer;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.ibatis.session.SqlSessionFactory;
 
 import javax.sql.DataSource;
@@ -35,15 +36,18 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
 @Slf4j
@@ -84,8 +88,9 @@ public class JdbcRegistryAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public DataSource jdbcRegistryDataSource(JdbcRegistryProperties jdbcRegistryProperties) {
-        return new HikariDataSource(jdbcRegistryProperties.getHikariConfig());
+    public DataSource jdbcRegistryDataSource(JdbcRegistryProperties jdbcRegistryProperties,
+                                             Environment environment) {
+        return new HikariDataSource(getJdbcRegistryHikariConfig(jdbcRegistryProperties, environment));
     }
 
     @Bean
@@ -116,6 +121,34 @@ public class JdbcRegistryAutoConfiguration {
     @ConditionalOnMissingBean
     public SqlSessionTemplate jdbcRegistrySqlSessionTemplate(SqlSessionFactory jdbcRegistrySqlSessionFactory) {
         return new SqlSessionTemplate(jdbcRegistrySqlSessionFactory);
+    }
+
+    HikariConfig getJdbcRegistryHikariConfig(JdbcRegistryProperties jdbcRegistryProperties,
+                                             Environment environment) {
+        HikariConfig hikariConfig = jdbcRegistryProperties.getHikariConfig();
+        if (hikariConfig != null) {
+            return hikariConfig;
+        }
+
+        hikariConfig = Binder.get(environment)
+                .bind("spring.datasource.hikari", HikariConfig.class)
+                .orElseGet(HikariConfig::new);
+
+        setIfBlank(hikariConfig.getJdbcUrl(), environment.getProperty("spring.datasource.url"),
+                hikariConfig::setJdbcUrl);
+        setIfBlank(hikariConfig.getUsername(), environment.getProperty("spring.datasource.username"),
+                hikariConfig::setUsername);
+        setIfBlank(hikariConfig.getPassword(), environment.getProperty("spring.datasource.password"),
+                hikariConfig::setPassword);
+        setIfBlank(hikariConfig.getDriverClassName(), environment.getProperty("spring.datasource.driver-class-name"),
+                hikariConfig::setDriverClassName);
+        return hikariConfig;
+    }
+
+    private void setIfBlank(String currentValue, String fallbackValue, java.util.function.Consumer<String> setter) {
+        if (StringUtils.isBlank(currentValue) && StringUtils.isNotBlank(fallbackValue)) {
+            setter.accept(fallbackValue);
+        }
     }
 
 }

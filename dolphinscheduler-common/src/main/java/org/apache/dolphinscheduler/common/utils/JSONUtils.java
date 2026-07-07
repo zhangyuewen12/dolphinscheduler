@@ -386,7 +386,7 @@ public final class JSONUtils {
 
     }
 
-    public static class LocalDateTimeSerializer extends JsonSerializer<LocalDateTime> {
+    public static class  LocalDateTimeSerializer extends JsonSerializer<LocalDateTime> {
 
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern(YYYY_MM_DD_HH_MM_SS);
 

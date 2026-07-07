@@ -193,7 +193,7 @@ public class JdbcRegistryServer implements IJdbcRegistryServer {
 
                     @Override
                     public void onRegistryRowDeleted(JdbcRegistryDataDTO data) {
-                        jdbcRegistryDataChangeListener.onJdbcRegistryDataDeleted(data.getDataKey());
+                        jdbcRegistryDataChangeListener.onJdbcRegistryDataDeleted(data.getDataKey(), data.getDataValue());
                     }
                 });
     }

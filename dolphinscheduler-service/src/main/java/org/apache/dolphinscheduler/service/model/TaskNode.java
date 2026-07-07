@@ -86,7 +86,7 @@ public class TaskNode {
     /**
      * task group id
      */
-    private int taskGroupId;
+    private Long taskGroupId;
     /**
      * task group id
      */
@@ -377,11 +377,11 @@ public class TaskNode {
         return this.environmentCode;
     }
 
-    public int getTaskGroupId() {
+    public Long getTaskGroupId() {
         return taskGroupId;
     }
 
-    public void setTaskGroupId(int taskGroupId) {
+    public void setTaskGroupId(Long taskGroupId) {
         this.taskGroupId = taskGroupId;
     }
 

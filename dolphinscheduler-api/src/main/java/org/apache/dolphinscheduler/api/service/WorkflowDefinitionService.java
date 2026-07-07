@@ -61,6 +61,26 @@ public interface WorkflowDefinitionService {
                                                  WorkflowExecutionTypeEnum executionType);
 
     /**
+     * Import or update a workflow definition by target project name and workflow name.
+     *
+     * <p>This API is intended for worker-side file publishing tools: the worker uploads
+     * the exported workflow JSON, while the API server still owns all metadata writes,
+     * permission checks, workflow versioning and task relation persistence.</p>
+     *
+     * @param loginUser login user
+     * @param projectName target project name
+     * @param workflowName target workflow definition name
+     * @param workerGroup target worker group name used by imported tasks
+     * @param workflowDefinitionJson workflow definition export JSON
+     * @return import result
+     */
+    Map<String, Object> importWorkflowDefinition(User loginUser,
+                                                 String projectName,
+                                                 String workflowName,
+                                                 String workerGroup,
+                                                 String workflowDefinitionJson);
+
+    /**
      * create workflow definition V2
      *
      * @param loginUser             login user

@@ -48,6 +48,16 @@ public interface SchedulerApi extends AutoCloseable {
     void deleteScheduleTask(int projectId, int scheduleId) throws SchedulerException;
 
     /**
+     * Check whether a schedule task exists in scheduler storage.
+     *
+     * @param projectId project id.
+     * @param scheduleId schedule id.
+     * @return true if exists, false otherwise.
+     * @throws SchedulerException if check failed.
+     */
+    boolean checkScheduleTaskExists(int projectId, int scheduleId) throws SchedulerException;
+
+    /**
      * Close the scheduler and release the resource.
      *
      * @throws SchedulerException if close failed.

@@ -29,6 +29,7 @@ import static org.apache.dolphinscheduler.api.constants.ApiFuncIdentificationCon
 import static org.apache.dolphinscheduler.api.constants.ApiFuncIdentificationConstant.WORKFLOW_TREE_VIEW;
 import static org.apache.dolphinscheduler.api.constants.ApiFuncIdentificationConstant.WORKFLOW_UPDATE;
 import static org.apache.dolphinscheduler.api.enums.Status.WORKFLOW_DEFINITION_NOT_EXIST;
+import static org.apache.dolphinscheduler.api.utils.WorkflowUtils.parseImportedWorkflowDefinition;
 import static org.apache.dolphinscheduler.common.constants.CommandKeyConstants.CMD_PARAM_SUB_WORKFLOW_DEFINITION_CODE;
 import static org.apache.dolphinscheduler.common.constants.Constants.COPY_SUFFIX;
 import static org.apache.dolphinscheduler.common.constants.Constants.DATA_LIST;
@@ -38,6 +39,7 @@ import static org.apache.dolphinscheduler.plugin.task.api.TaskConstants.LOCAL_PA
 import static org.apache.dolphinscheduler.plugin.task.api.TaskConstants.TASK_TYPE;
 import static org.apache.dolphinscheduler.plugin.task.api.TaskPluginManager.checkTaskParameters;
 
+import org.apache.dolphinscheduler.api.dto.ImportedWorkflowDefinition;
 import org.apache.dolphinscheduler.api.dto.TaskCodeVersionDto;
 import org.apache.dolphinscheduler.api.dto.treeview.Instance;
 import org.apache.dolphinscheduler.api.dto.treeview.TreeViewDto;
@@ -51,6 +53,7 @@ import org.apache.dolphinscheduler.api.service.ProjectService;
 import org.apache.dolphinscheduler.api.service.SchedulerService;
 import org.apache.dolphinscheduler.api.service.TaskDefinitionLogService;
 import org.apache.dolphinscheduler.api.service.TaskDefinitionService;
+import org.apache.dolphinscheduler.api.service.WorkerGroupService;
 import org.apache.dolphinscheduler.api.service.WorkflowDefinitionService;
 import org.apache.dolphinscheduler.api.service.WorkflowInstanceService;
 import org.apache.dolphinscheduler.api.service.WorkflowLineageService;
@@ -77,6 +80,7 @@ import org.apache.dolphinscheduler.dao.entity.TaskDefinitionLog;
 import org.apache.dolphinscheduler.dao.entity.TaskInstance;
 import org.apache.dolphinscheduler.dao.entity.User;
 import org.apache.dolphinscheduler.dao.entity.UserWithWorkflowDefinitionCode;
+import org.apache.dolphinscheduler.dao.entity.WorkerGroupPageDetail;
 import org.apache.dolphinscheduler.dao.entity.WorkflowDefinition;
 import org.apache.dolphinscheduler.dao.entity.WorkflowDefinitionLog;
 import org.apache.dolphinscheduler.dao.entity.WorkflowInstance;
@@ -96,6 +100,7 @@ import org.apache.dolphinscheduler.dao.mapper.WorkflowTaskRelationLogMapper;
 import org.apache.dolphinscheduler.dao.mapper.WorkflowTaskRelationMapper;
 import org.apache.dolphinscheduler.dao.model.PageListingResult;
 import org.apache.dolphinscheduler.dao.repository.TaskDefinitionLogDao;
+import org.apache.dolphinscheduler.dao.repository.WorkerGroupDao;
 import org.apache.dolphinscheduler.dao.repository.WorkflowDefinitionDao;
 import org.apache.dolphinscheduler.dao.repository.WorkflowDefinitionLogDao;
 import org.apache.dolphinscheduler.plugin.task.api.model.DependentItem;
@@ -104,6 +109,7 @@ import org.apache.dolphinscheduler.plugin.task.api.model.Property;
 import org.apache.dolphinscheduler.plugin.task.api.parameters.DependentParameters;
 import org.apache.dolphinscheduler.plugin.task.api.parameters.SwitchParameters;
 import org.apache.dolphinscheduler.plugin.task.api.utils.TaskTypeUtils;
+import org.apache.dolphinscheduler.scheduler.api.SchedulerApi;
 import org.apache.dolphinscheduler.service.model.TaskNode;
 import org.apache.dolphinscheduler.service.process.ProcessService;
 
@@ -140,6 +146,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.Lists;
@@ -184,6 +191,9 @@ public class WorkflowDefinitionServiceImpl extends BaseServiceImpl implements Wo
     private ProcessService processService;
 
     @Autowired
+    private SchedulerApi schedulerApi;
+
+    @Autowired
     private TaskDefinitionLogDao taskDefinitionLogDao;
 
     @Autowired
@@ -217,6 +227,12 @@ public class WorkflowDefinitionServiceImpl extends BaseServiceImpl implements Wo
 
     @Autowired
     private MetricsCleanUpService metricsCleanUpService;
+
+    @Autowired
+    private WorkerGroupDao workerGroupDao;
+
+    @Autowired
+    private WorkerGroupService workerGroupService;
 
     /**
      * create workflow definition
@@ -276,6 +292,91 @@ public class WorkflowDefinitionServiceImpl extends BaseServiceImpl implements Wo
         result = createDagDefine(loginUser, taskRelationList, workflowDefinition, taskDefinitionLogs);
         return result;
     }
+
+    /**
+     * Import or update one workflow definition from an exported workflow JSON.
+     *
+     * <p>This method intentionally delegates persistence to the existing create/update workflow
+     * methods. The new import path only owns file-format normalization and import policy:
+     * create when the target workflow does not exist, update only when a single matching
+     * workflow exists and is OFFLINE.</p>
+     */
+    @Override
+    @Transactional
+    public Map<String, Object> importWorkflowDefinition(User loginUser,
+                                                        String projectName,
+                                                        String workflowName,
+                                                        String workerGroup,
+                                                        String workflowDefinitionJson) {
+        Map<String, Object> result = new HashMap<>();
+        if (StringUtils.isBlank(projectName) || StringUtils.isBlank(workflowName)
+                || StringUtils.isBlank(workerGroup) || StringUtils.isBlank(workflowDefinitionJson)) {
+            putMsg(result, Status.REQUEST_PARAMS_NOT_VALID_ERROR,
+                    "projectName/workflowName/workerGroup/workflowDefinitionJson");
+            return result;
+        }
+
+        Project project = projectMapper.queryByName(projectName);
+        if (project == null) {
+            putMsg(result, Status.PROJECT_NOT_FOUND, projectName);
+            return result;
+        }
+
+        boolean hasProjectAndWritePerm = projectService.hasProjectAndWritePerm(loginUser, project, result);
+        if (!hasProjectAndWritePerm) {
+            return result;
+        }
+
+        if (!isWorkerGroupExists(workerGroup)) {
+            putMsg(result, Status.WORKER_GROUP_NOT_EXIST, workerGroup);
+            return result;
+        }
+
+        ImportedWorkflowDefinition importedDefinition =
+                parseImportedWorkflowDefinition(project.getCode(), loginUser.getId(), workflowName, workerGroup,
+                        workflowDefinitionJson);
+
+        List<WorkflowDefinition> matchedDefinitions = workflowDefinitionMapper.queryAllDefinitionList(project.getCode())
+                .stream()
+                .filter(workflowDefinition -> workflowName.equals(workflowDefinition.getName()))
+                .collect(Collectors.toList());
+        if (matchedDefinitions.size() > 1) {
+            putMsg(result, Status.IMPORT_WORKFLOW_DEFINE_NAME_DUPLICATE, workflowName, projectName);
+            return result;
+        }
+        if (matchedDefinitions.isEmpty()) {
+            return createWorkflowDefinition(loginUser, project.getCode(), importedDefinition.getName(),
+                    importedDefinition.getDescription(), importedDefinition.getGlobalParams(),
+                    importedDefinition.getLocations(), importedDefinition.getTimeout(),
+                    importedDefinition.getTaskRelationJson(), importedDefinition.getTaskDefinitionJson(), null,
+                    importedDefinition.getExecutionType());
+        }
+
+        WorkflowDefinition matchedDefinition = matchedDefinitions.get(0);
+        if (matchedDefinition.getReleaseState() != ReleaseState.OFFLINE) {
+            putMsg(result, Status.IMPORT_WORKFLOW_DEFINE_ONLINE_NOT_ALLOWED, workflowName, projectName);
+            return result;
+        }
+        return updateWorkflowDefinition(loginUser, project.getCode(), importedDefinition.getName(),
+                matchedDefinition.getCode(), importedDefinition.getDescription(), importedDefinition.getGlobalParams(),
+                importedDefinition.getLocations(), importedDefinition.getTimeout(),
+                importedDefinition.getTaskRelationJson(), importedDefinition.getTaskDefinitionJson(),
+                importedDefinition.getExecutionType());
+    }
+
+    /**
+     * Check worker groups from both persisted UI groups and live worker config groups.
+     */
+    private boolean isWorkerGroupExists(String workerGroup) {
+        if (workerGroupDao.queryAllWorkerGroupNames().contains(workerGroup)) {
+            return true;
+        }
+        return workerGroupService.getConfigWorkerGroupPageDetail()
+                .stream()
+                .map(WorkerGroupPageDetail::getName)
+                .anyMatch(workerGroup::equals);
+    }
+
 
     private void createWorkflowValid(User user, WorkflowDefinition workflowDefinition) {
         Project project = projectMapper.queryByCode(workflowDefinition.getProjectCode());
@@ -1059,6 +1160,15 @@ public class WorkflowDefinitionServiceImpl extends BaseServiceImpl implements Wo
         Schedule scheduleObj = scheduleMapper.queryByWorkflowDefinitionCode(code);
         if (scheduleObj != null) {
             if (scheduleObj.getReleaseState() == ReleaseState.OFFLINE) {
+                Project scheduleProject = projectMapper.queryByCode(workflowDefinition.getProjectCode());
+                if (scheduleProject != null
+                        && schedulerApi.checkScheduleTaskExists(scheduleProject.getId(), scheduleObj.getId())) {
+                    String errorMessage = String.format(
+                            "delete workflow definition failed, quartz schedule still exists, projectId=%s, scheduleId=%s",
+                            scheduleProject.getId(),
+                            scheduleObj.getId());
+                    throw new ServiceException(Status.DELETE_SCHEDULE_BY_ID_ERROR.getCode(), errorMessage);
+                }
                 int delete = scheduleMapper.deleteById(scheduleObj.getId());
                 if (delete == 0) {
                     throw new ServiceException(Status.DELETE_SCHEDULE_BY_ID_ERROR);

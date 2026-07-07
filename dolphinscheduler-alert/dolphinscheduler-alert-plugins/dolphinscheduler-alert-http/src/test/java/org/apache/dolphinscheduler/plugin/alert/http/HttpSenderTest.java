@@ -18,7 +18,9 @@
 package org.apache.dolphinscheduler.plugin.alert.http;
 
 import org.apache.dolphinscheduler.alert.api.AlertResult;
+import org.apache.dolphinscheduler.common.constants.DateConstants;
 import org.apache.dolphinscheduler.common.model.OkHttpRequestHeaderContentType;
+import org.apache.dolphinscheduler.common.utils.DateUtils;
 import org.apache.dolphinscheduler.common.utils.JSONUtils;
 
 import org.apache.commons.io.IOUtils;
@@ -26,6 +28,7 @@ import org.apache.http.HttpStatus;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -96,6 +99,31 @@ public class HttpSenderTest {
 
         Assertions.assertTrue(alertResult.isSuccess());
         Assertions.assertTrue(alertResult.getMessage().contains(msg));
+    }
+
+    @Test
+    void testHttpSenderPostWithAlertTime() throws Exception {
+        String msg = "msg_test";
+        String alertTime = "2026-05-21 10:30:45";
+        Date alertDate = DateUtils.parse(alertTime, DateConstants.YYYY_MM_DD_HH_MM_SS, null);
+        Map<String, String> bodyParams = new HashMap<>();
+        bodyParams.put("msg", HttpAlertConstants.MSG_PARAMS);
+        bodyParams.put("alertTime", HttpAlertConstants.ALERT_TIME_PARAMS);
+        paramsMap.put(HttpAlertConstants.NAME_BODY_PARAMS, JSONUtils.toJsonString(bodyParams));
+        paramsMap.put(HttpAlertConstants.NAME_CONTENT_TYPE, OkHttpRequestHeaderContentType.APPLICATION_JSON.getValue());
+
+        String mockPostUrl = createMockWebServer("/post", HttpStatus.SC_OK);
+        paramsMap.put(HttpAlertConstants.NAME_URL, mockPostUrl);
+
+        paramsMap.put(HttpAlertConstants.NAME_REQUEST_TYPE, HttpRequestMethod.POST.name());
+
+        HttpSender httpSender = new HttpSender(paramsMap);
+
+        AlertResult alertResult = httpSender.send(msg, alertDate);
+
+        Assertions.assertTrue(alertResult.isSuccess());
+        Assertions.assertTrue(alertResult.getMessage().contains(msg));
+        Assertions.assertTrue(alertResult.getMessage().contains(alertTime));
     }
 
     @Test

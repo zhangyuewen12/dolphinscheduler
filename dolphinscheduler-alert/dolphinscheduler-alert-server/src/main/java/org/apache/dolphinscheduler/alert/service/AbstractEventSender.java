@@ -155,6 +155,7 @@ public abstract class AbstractEventSender<T> implements EventSender<T> {
         AlertData alertData = AlertData.builder()
                 .title(AlertConstants.TEST_TITLE)
                 .content(AlertConstants.TEST_CONTENT)
+                .alertTime(new Date())
                 .build();
 
         AlertInfo alertInfo = AlertInfo.builder()

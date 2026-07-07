@@ -30,6 +30,7 @@ import org.apache.dolphinscheduler.extract.alert.request.AlertSendResponse;
 import org.apache.commons.collections4.CollectionUtils;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
@@ -61,6 +62,7 @@ public class AlertSender extends AbstractEventSender<Alert> {
         List<AlertPluginInstance> alertInstanceList = alertDao.listInstanceByAlertGroupId(alertGroupId);
         AlertData alertData = AlertData.builder()
                 .content(content)
+                .alertTime(new Date())
                 .title(title)
                 .build();
 
@@ -103,6 +105,7 @@ public class AlertSender extends AbstractEventSender<Alert> {
         return AlertData.builder()
                 .id(event.getId())
                 .content(event.getContent())
+                .alertTime(event.getCreateTime())
                 .log(event.getLog())
                 .title(event.getTitle())
                 .alertType(event.getAlertType().getCode())

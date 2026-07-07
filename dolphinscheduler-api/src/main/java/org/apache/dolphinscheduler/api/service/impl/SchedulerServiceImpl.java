@@ -579,6 +579,7 @@ public class SchedulerServiceImpl extends BaseServiceImpl implements SchedulerSe
         }
 
         this.projectPermCheckByWorkflowCode(loginUser, schedule.getWorkflowDefinitionCode());
+        ensureQuartzScheduleRemoved(schedule);
         int delete = scheduleMapper.deleteById(scheduleId);
         if (delete <= 0) {
             throw new ServiceException(Status.DELETE_SCHEDULE_BY_ID_ERROR);
@@ -742,6 +743,24 @@ public class SchedulerServiceImpl extends BaseServiceImpl implements SchedulerSe
                 workflowDefinitionMapper.queryByCode(schedule.getWorkflowDefinitionCode());
         Project project = projectMapper.queryByCode(workflowDefinition.getProjectCode());
         schedulerApi.deleteScheduleTask(project.getId(), schedule.getId());
+    }
+
+    private void ensureQuartzScheduleRemoved(Schedule schedule) {
+        WorkflowDefinition workflowDefinition = workflowDefinitionMapper.queryByCode(schedule.getWorkflowDefinitionCode());
+        if (workflowDefinition == null) {
+            return;
+        }
+        Project project = projectMapper.queryByCode(workflowDefinition.getProjectCode());
+        if (project == null) {
+            return;
+        }
+        if (schedulerApi.checkScheduleTaskExists(project.getId(), schedule.getId())) {
+            String errorMessage = String.format(
+                    "delete schedule failed, quartz schedule still exists, projectId=%s, scheduleId=%s",
+                    project.getId(),
+                    schedule.getId());
+            throw new ServiceException(Status.DELETE_SCHEDULE_BY_ID_ERROR.getCode(), errorMessage);
+        }
     }
 
     private void updateSchedule(Map<String, Object> result, Schedule schedule, WorkflowDefinition workflowDefinition,

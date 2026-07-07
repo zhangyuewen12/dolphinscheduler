@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: dolphinscheduler-flink-monitor
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/dolphinscheduler?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+
+mybatis-plus:
+  mapper-locations: classpath*:org/apache/dolphinscheduler/flink/monitor/mapper/*.xml
+
+flink:
+  monitor:
+    heartbeat-interval-millis: 10000
+    monitor-interval-millis: 15000
+    instance-ttl-seconds: 60
+    id-step: 1
+    fetch-size: 50
+    lease-seconds: 30
+    monitor-statuses:
+      - RUNNING
+      - SUBMITTED

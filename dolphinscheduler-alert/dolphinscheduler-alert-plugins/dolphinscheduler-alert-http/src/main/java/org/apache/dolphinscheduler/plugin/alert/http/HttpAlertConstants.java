@@ -53,4 +53,6 @@ public final class HttpAlertConstants {
     public static final int DEFAULT_TIMEOUT = 120;
 
     public static final String MSG_PARAMS = "${msg}";
+
+    public static final String ALERT_TIME_PARAMS = "${alertTime}";
 }

@@ -124,7 +124,7 @@ public class TaskInstance implements Serializable {
 
     private int dryRun;
 
-    private int taskGroupId;
+    private long taskGroupId;
 
     private Integer cpuQuota;
 

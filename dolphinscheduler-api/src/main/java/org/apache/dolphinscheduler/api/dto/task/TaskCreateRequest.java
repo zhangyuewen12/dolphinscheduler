@@ -85,7 +85,7 @@ public class TaskCreateRequest {
     private String resourceIds;
 
     @Schema(example = "2")
-    private int taskGroupId;
+    private Long taskGroupId;
 
     @Schema(example = "1", implementation = int.class, description = "A priority number for execute task, the bigger the high priority, default null if not provided")
     private int taskGroupPriority;

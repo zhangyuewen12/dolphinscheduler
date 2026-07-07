@@ -34,6 +34,6 @@ public final class HttpAlertChannel implements AlertChannel {
             return new AlertResult(false, "http params is null");
         }
 
-        return new HttpSender(paramsMap).send(alertData.getContent());
+        return new HttpSender(paramsMap).send(alertData.getContent(), alertData.getAlertTime());
     }
 }

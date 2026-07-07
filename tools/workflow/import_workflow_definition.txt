@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Import DolphinScheduler workflow definitions from exported JSON files."""
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+
+JSON_TYPE = Any
+
+
+class ApiError(RuntimeError):
+    pass
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Import workflow definitions by calling DolphinScheduler's "
+            "workflow-definition REST API."
+        )
+    )
+    parser.add_argument("file", help="Workflow export JSON file, or a zip containing JSON.")
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:12345/dolphinscheduler",
+        help=(
+            "DolphinScheduler API base URL, including context path. "
+            "Default: %(default)s"
+        ),
+    )
+    project_target = parser.add_mutually_exclusive_group(required=True)
+    project_target.add_argument("--project-name", help="Target project name.")
+    project_target.add_argument("--project-code", type=int, help="Target project code.")
+    parser.add_argument("--username", help="Login username. Not needed with --session-id or --token.")
+    parser.add_argument("--password", help="Login password. Not needed with --session-id or --token.")
+    parser.add_argument("--session-id", help="Existing DolphinScheduler sessionId header value.")
+    parser.add_argument("--token", help="Existing DolphinScheduler access token header value.")
+    parser.add_argument("--name-prefix", default="", help="Prefix added to imported workflow names.")
+    parser.add_argument("--name-suffix", default="", help="Suffix added to imported workflow names.")
+    parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        help="Deprecated. Existing OFFLINE workflows are updated by default.",
+    )
+    parser.add_argument(
+        "--keep-task-codes",
+        action="store_true",
+        help="Keep exported task codes. By default task codes are regenerated to avoid collisions.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the request payloads without calling the API.",
+    )
+    return parser.parse_args()
+
+
+def compact_json(value: JSON_TYPE) -> str:
+    if value is None:
+        return "[]"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def read_export(path: Path) -> JSON_TYPE:
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            json_names = [name for name in archive.namelist() if name.lower().endswith(".json")]
+            if not json_names:
+                raise ValueError(f"No JSON file found in {path}")
+            if len(json_names) > 1:
+                print(
+                    f"Found multiple JSON files in {path}; using {json_names[0]}",
+                    file=sys.stderr,
+                )
+            with archive.open(json_names[0]) as fp:
+                return json.loads(fp.read().decode("utf-8"))
+
+    with path.open(encoding="utf-8") as fp:
+        return json.load(fp)
+
+
+def as_workflow_items(raw: JSON_TYPE) -> List[Dict[str, JSON_TYPE]]:
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = [raw]
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError("Workflow export must be a JSON object or an array of objects.")
+    return items
+
+
+def next_code(seed: int) -> int:
+    return int(time.time() * 1_000_000) + seed
+
+
+def infer_task_codes(tasks: List[Dict[str, JSON_TYPE]], relations: List[Dict[str, JSON_TYPE]]) -> None:
+    task_codes = {task.get("code") for task in tasks if isinstance(task.get("code"), int)}
+    post_task_codes: List[int] = []
+    for relation in relations:
+        code = relation.get("postTaskCode")
+        if isinstance(code, int) and code != 0 and code not in post_task_codes:
+            post_task_codes.append(code)
+
+    if task_codes == set(post_task_codes) or len(tasks) != len(post_task_codes):
+        return
+
+    # Some legacy export samples store the workflow code in taskDefinitionList.code.
+    # The relation postTaskCode/location taskCode values are the ones the create API validates.
+    for task, code in zip(tasks, post_task_codes):
+        task["code"] = code
+
+
+def replace_location_codes(value: JSON_TYPE, mapping: Dict[int, int]) -> JSON_TYPE:
+    if isinstance(value, list):
+        return [replace_location_codes(item, mapping) for item in value]
+    if isinstance(value, dict):
+        replaced = {key: replace_location_codes(item, mapping) for key, item in value.items()}
+        task_code = replaced.get("taskCode")
+        if isinstance(task_code, int):
+            replaced["taskCode"] = mapping.get(task_code, task_code)
+        return replaced
+    return value
+
+
+def parse_json_string(value: JSON_TYPE) -> JSON_TYPE:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
+
+
+def regenerate_task_codes(
+    tasks: List[Dict[str, JSON_TYPE]],
+    relations: List[Dict[str, JSON_TYPE]],
+    locations: JSON_TYPE,
+    item_index: int,
+) -> Tuple[List[Dict[str, JSON_TYPE]], List[Dict[str, JSON_TYPE]], JSON_TYPE]:
+    mapping: Dict[int, int] = {}
+    base_seed = item_index * 10_000
+    for index, task in enumerate(tasks, start=1):
+        old_code = task.get("code")
+        if isinstance(old_code, int) and old_code > 0:
+            mapping[old_code] = next_code(base_seed + index)
+
+    if not mapping:
+        return tasks, relations, locations
+
+    new_tasks = [dict(task) for task in tasks]
+    new_relations = [dict(relation) for relation in relations]
+    new_locations = replace_location_codes(locations, mapping)
+
+    for task in new_tasks:
+        if isinstance(task, dict):
+            code = task.get("code")
+            if isinstance(code, int):
+                task["code"] = mapping.get(code, code)
+            task["version"] = 1
+    for relation in new_relations:
+        if isinstance(relation, dict):
+            pre_task_code = relation.get("preTaskCode")
+            post_task_code = relation.get("postTaskCode")
+            if isinstance(pre_task_code, int):
+                relation["preTaskCode"] = mapping.get(pre_task_code, pre_task_code)
+            if isinstance(post_task_code, int):
+                relation["postTaskCode"] = mapping.get(post_task_code, post_task_code)
+            if relation.get("preTaskCode", 0) != 0:
+                relation["preTaskVersion"] = 1
+            relation["postTaskVersion"] = 1
+
+    return new_tasks, new_relations, new_locations
+
+
+def normalize_workflow_item(
+    item: Dict[str, JSON_TYPE],
+    project_code: int,
+    item_index: int,
+    name_prefix: str,
+    name_suffix: str,
+    keep_task_codes: bool,
+) -> Dict[str, str]:
+    workflow = item.get("workflowDefinition") if isinstance(item.get("workflowDefinition"), dict) else item
+    if not isinstance(workflow, dict):
+        raise ValueError("workflowDefinition must be an object.")
+
+    tasks = item.get("taskDefinitionList", item.get("taskDefinitionJson", workflow.get("taskDefinitionJson")))
+    relations = item.get(
+        "workflowTaskRelationList",
+        item.get("taskRelationJson", workflow.get("taskRelationJson")),
+    )
+    if not isinstance(tasks, list):
+        tasks = parse_json_string(tasks)
+    if not isinstance(relations, list):
+        relations = parse_json_string(relations)
+    if not isinstance(tasks, list) or not isinstance(relations, list):
+        raise ValueError(f"Workflow {workflow.get('name', '<unknown>')} misses task or relation JSON.")
+
+    locations = parse_json_string(workflow.get("locations", item.get("locations", [])))
+    infer_task_codes(tasks, relations)
+    if not keep_task_codes:
+        tasks, relations, locations = regenerate_task_codes(tasks, relations, locations, item_index)
+
+    name = f"{name_prefix}{workflow.get('name', item.get('name', ''))}{name_suffix}"
+    if not name:
+        raise ValueError("Workflow name is empty.")
+
+    payload: Dict[str, str] = {
+        "name": name,
+        "description": str(workflow.get("description", item.get("description", "")) or ""),
+        "globalParams": compact_json(workflow.get("globalParams", item.get("globalParams", []))),
+        "locations": compact_json(locations),
+        "timeout": str(workflow.get("timeout", item.get("timeout", 0)) or 0),
+        "taskRelationJson": compact_json(relations),
+        "taskDefinitionJson": compact_json(tasks),
+        "otherParamsJson": compact_json(item.get("otherParamsJson", {})),
+        "executionType": str(workflow.get("executionType", item.get("executionType", "PARALLEL")) or "PARALLEL"),
+    }
+
+    for field in ("taskRelationJson", "taskDefinitionJson"):
+        if payload[field] in ("", "null"):
+            raise ValueError(f"Workflow {name} has empty {field}.")
+
+    return payload
+
+
+def normalize_base_url(base_url: str) -> str:
+    return base_url.rstrip("/")
+
+
+def build_url(base_url: str, path: str, query: Optional[Dict[str, str]] = None) -> str:
+    url = f"{normalize_base_url(base_url)}/{path.lstrip('/')}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    return url
+
+
+def request_json(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    data: Optional[Dict[str, str]] = None,
+) -> JSON_TYPE:
+    encoded_data = None
+    request_headers = dict(headers)
+    if data is not None:
+        encoded_data = urllib.parse.urlencode(data).encode("utf-8")
+        request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    request = urllib.request.Request(url, data=encoded_data, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as ex:
+        body = ex.read().decode("utf-8", errors="replace")
+        raise ApiError(f"HTTP {ex.code} {method} {url}: {body}") from ex
+    except urllib.error.URLError as ex:
+        raise ApiError(f"Cannot connect to {url}: {ex.reason}") from ex
+
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as ex:
+        raise ApiError(f"Response is not JSON from {url}: {body}") from ex
+
+
+def unwrap_result(result: JSON_TYPE, action: str) -> JSON_TYPE:
+    if not isinstance(result, dict) or "code" not in result:
+        return result
+    if result.get("code") == 0:
+        return result.get("data")
+    raise ApiError(f"{action} failed: code={result.get('code')} msg={result.get('msg')}")
+
+
+def login(base_url: str, username: str, password: str) -> str:
+    result = request_json(
+        "POST",
+        build_url(base_url, "/login"),
+        {},
+        {"userName": username, "userPassword": password},
+    )
+    data = unwrap_result(result, "Login")
+    if not isinstance(data, dict) or not data.get("sessionId"):
+        raise ApiError("Login succeeded but response did not contain sessionId.")
+    return str(data["sessionId"])
+
+
+def headers_for(args: argparse.Namespace) -> Dict[str, str]:
+    if args.token:
+        return {"token": args.token}
+    if args.session_id:
+        return {"sessionId": args.session_id}
+    if args.username and args.password:
+        return {"sessionId": login(args.base_url, args.username, args.password)}
+    raise ValueError("Provide --token, --session-id, or both --username and --password.")
+
+
+def ensure_list(data: JSON_TYPE, action: str) -> List[Dict[str, JSON_TYPE]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in ("totalList", "data", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    raise ApiError(f"{action} did not return a list.")
+
+
+def query_project_code(
+    base_url: str,
+    headers: Dict[str, str],
+    project_name: str,
+) -> int:
+    result = request_json(
+        "GET",
+        build_url(base_url, "/projects/list"),
+        headers,
+    )
+    projects = ensure_list(unwrap_result(result, "Query project list"), "Query project list")
+    matched_projects = [project for project in projects if project.get("name") == project_name]
+    if not matched_projects:
+        raise ApiError(f"Project not found: {project_name}")
+    if len(matched_projects) > 1:
+        codes = ", ".join(str(project.get("code")) for project in matched_projects)
+        raise ApiError(f"Found multiple projects named {project_name}: {codes}")
+    code = matched_projects[0].get("code")
+    if not isinstance(code, int):
+        raise ApiError(f"Project {project_name} has invalid code: {code}")
+    return code
+
+
+def query_workflows_by_name(
+    base_url: str,
+    headers: Dict[str, str],
+    project_code: int,
+    workflow_name: str,
+) -> List[Dict[str, JSON_TYPE]]:
+    result = request_json(
+        "GET",
+        build_url(base_url, f"/projects/{project_code}/workflow-definition/all"),
+        headers,
+    )
+    workflows = ensure_list(
+        unwrap_result(result, f"Query workflow list in project {project_code}"),
+        f"Query workflow list in project {project_code}",
+    )
+    return [workflow for workflow in workflows if workflow.get("name") == workflow_name]
+
+
+def import_workflow(
+    base_url: str,
+    headers: Dict[str, str],
+    project_code: int,
+    payload: Dict[str, str],
+) -> JSON_TYPE:
+    method = "POST"
+    path = f"/projects/{project_code}/workflow-definition"
+
+    matched_workflows = query_workflows_by_name(base_url, headers, project_code, payload["name"])
+    if len(matched_workflows) > 1:
+        codes = ", ".join(str(workflow.get("code")) for workflow in matched_workflows)
+        raise ApiError(f"Found multiple workflows named {payload['name']} in project {project_code}: {codes}")
+    if len(matched_workflows) == 1:
+        workflow = matched_workflows[0]
+        release_state = workflow.get("releaseState")
+        if release_state != "OFFLINE":
+            raise ApiError(
+                f"Workflow {payload['name']} exists but is {release_state}; "
+                "only OFFLINE workflows can be updated."
+            )
+        workflow_code = workflow.get("code")
+        if not isinstance(workflow_code, int):
+            raise ApiError(f"Workflow {payload['name']} has invalid code: {workflow_code}")
+        method = "PUT"
+        path = f"{path}/{workflow_code}"
+        payload = dict(payload)
+        payload["releaseState"] = "OFFLINE"
+
+    result = request_json(method, build_url(base_url, path), headers, payload)
+    return unwrap_result(result, f"Import workflow {payload['name']}")
+
+
+def print_dry_run(payloads: Iterable[Dict[str, str]]) -> None:
+    for payload in payloads:
+        printable = dict(payload)
+        for field in ("taskDefinitionJson", "taskRelationJson", "locations", "globalParams"):
+            printable[field] = json.loads(printable[field])
+        print(json.dumps(printable, ensure_ascii=False, indent=2))
+
+
+def main() -> int:
+    args = parse_args()
+    raw = read_export(Path(args.file))
+    items = as_workflow_items(raw)
+    payloads = [
+        normalize_workflow_item(
+            item,
+            args.project_code,
+            index,
+            args.name_prefix,
+            args.name_suffix,
+            args.keep_task_codes,
+        )
+        for index, item in enumerate(items, start=1)
+    ]
+
+    if args.dry_run:
+        print_dry_run(payloads)
+        return 0
+
+    headers = headers_for(args)
+    project_code = args.project_code
+    if project_code is None:
+        project_code = query_project_code(args.base_url, headers, args.project_name)
+
+    for payload in payloads:
+        data = import_workflow(
+            args.base_url,
+            headers,
+            project_code,
+            payload,
+        )
+        code = data.get("code") if isinstance(data, dict) else None
+        print(f"Imported workflow: name={payload['name']} code={code if code is not None else '-'}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ApiError, OSError, ValueError) as ex:
+        print(f"ERROR: {ex}", file=sys.stderr)
+        raise SystemExit(1)

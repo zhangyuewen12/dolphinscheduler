@@ -74,11 +74,25 @@ public class QuartzScheduler implements SchedulerApi {
         try {
             if (scheduler.checkExists(jobKey)) {
                 log.info("Try to delete scheduler task, projectId: {}, schedulerId: {}", projectId, scheduleId);
-                scheduler.deleteJob(jobKey);
+                boolean deleted = scheduler.deleteJob(jobKey);
+                if (!deleted) {
+                    throw new SchedulerException(QuartzSchedulerExceptionEnum.QUARTZ_DELETE_JOB_ERROR);
+                }
             }
         } catch (Exception e) {
             log.error("Failed to delete scheduler task, projectId: {}, schedulerId: {}", projectId, scheduleId, e);
             throw new SchedulerException(QuartzSchedulerExceptionEnum.QUARTZ_DELETE_JOB_ERROR, e);
+        }
+    }
+
+    @Override
+    public boolean checkScheduleTaskExists(int projectId, int scheduleId) throws SchedulerException {
+        JobKey jobKey = QuartzJobKey.of(projectId, scheduleId).toJobKey();
+        try {
+            return scheduler.checkExists(jobKey);
+        } catch (Exception e) {
+            log.error("Failed to check scheduler task, projectId: {}, schedulerId: {}", projectId, scheduleId, e);
+            throw new SchedulerException(QuartzSchedulerExceptionEnum.QUARTZ_QUERY_JOB_ERROR, e);
         }
     }
 

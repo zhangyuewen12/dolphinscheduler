@@ -21,6 +21,7 @@ import org.apache.dolphinscheduler.alert.api.AlertResult;
 import org.apache.dolphinscheduler.common.model.OkHttpRequestHeaderContentType;
 import org.apache.dolphinscheduler.common.model.OkHttpRequestHeaders;
 import org.apache.dolphinscheduler.common.model.OkHttpResponse;
+import org.apache.dolphinscheduler.common.utils.DateUtils;
 import org.apache.dolphinscheduler.common.utils.JSONUtils;
 import org.apache.dolphinscheduler.common.utils.OkHttpUtils;
 
@@ -31,6 +32,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -97,12 +99,15 @@ public final class HttpSender {
     }
 
     public AlertResult send(String msg) {
+        return send(msg, null);
+    }
 
+    public AlertResult send(String msg, Date alertTime) {
         AlertResult alertResult = new AlertResult();
         OkHttpResponse okHttpResponse;
 
         try {
-            okHttpResponse = sendHttpRequest(msg);
+            okHttpResponse = sendHttpRequest(msg, alertTime);
         } catch (RuntimeException e) {
             throw new RuntimeException(e);
         }
@@ -124,11 +129,11 @@ public final class HttpSender {
         }
     }
 
-    private OkHttpResponse sendHttpRequest(String msg) throws RuntimeException {
+    private OkHttpResponse sendHttpRequest(String msg, Date alertTime) throws RuntimeException {
         switch (requestType) {
             case POST:
                 setMsgInHeader(msg);
-                setMsgInRequestBody(msg);
+                setMsgInRequestBody(msg, alertTime);
                 return sendPostRequest();
             case GET:
                 setMsgInUrl(msg);
@@ -136,7 +141,7 @@ public final class HttpSender {
                 return sendGetRequest();
             case PUT:
                 setMsgInHeader(msg);
-                setMsgInRequestBody(msg);
+                setMsgInRequestBody(msg, alertTime);
                 return sendPutRequest();
             default:
                 throw new RuntimeException(String.format("http request method %s not supported",
@@ -212,17 +217,28 @@ public final class HttpSender {
     /**
      * set body params
      */
-    private void setMsgInRequestBody(String msg) {
+    private void setMsgInRequestBody(String msg, Date alertTime) {
         if (bodyParams == null) {
             return;
         }
 
         bodyParams.forEach((key, value) -> {
             String valueOf = String.valueOf(value);
-            if (valueOf.contains(HttpAlertConstants.MSG_PARAMS)) {
-                bodyParams.put(key, valueOf.replace(HttpAlertConstants.MSG_PARAMS, msg));
+            String replacedValue = valueOf;
+            if (msg != null && valueOf.contains(HttpAlertConstants.MSG_PARAMS)) {
+                replacedValue = replacedValue.replace(HttpAlertConstants.MSG_PARAMS, msg);
+            }
+            if (valueOf.contains(HttpAlertConstants.ALERT_TIME_PARAMS)) {
+                replacedValue = replacedValue.replace(HttpAlertConstants.ALERT_TIME_PARAMS, formatAlertTime(alertTime));
+            }
+            if (!valueOf.equals(replacedValue)) {
+                bodyParams.put(key, replacedValue);
             }
         });
+    }
+
+    private String formatAlertTime(Date alertTime) {
+        return DateUtils.dateToString(alertTime == null ? new Date() : alertTime);
     }
 
 }

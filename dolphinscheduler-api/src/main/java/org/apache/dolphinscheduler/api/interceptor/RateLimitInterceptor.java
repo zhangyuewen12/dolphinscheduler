@@ -24,6 +24,7 @@ import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.Map;
+import java.util.HashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -100,10 +101,19 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     }
 
     public RateLimitInterceptor(ApiConfig.TrafficConfiguration trafficConfiguration) {
-        this.trafficConfiguration = trafficConfiguration;
-        if (trafficConfiguration.isGlobalSwitch()) {
+        this.trafficConfiguration = trafficConfiguration == null ? new ApiConfig.TrafficConfiguration() : trafficConfiguration;
+        if (this.trafficConfiguration.getMaxGlobalQpsRate() == null) {
+            this.trafficConfiguration.setMaxGlobalQpsRate(300);
+        }
+        if (this.trafficConfiguration.getDefaultTenantQpsRate() == null) {
+            this.trafficConfiguration.setDefaultTenantQpsRate(10);
+        }
+        if (this.trafficConfiguration.getCustomizeTenantQpsRate() == null) {
+            this.trafficConfiguration.setCustomizeTenantQpsRate(new HashMap<String, Integer>());
+        }
+        if (this.trafficConfiguration.isGlobalSwitch()) {
             this.globalRateLimiter =
-                    RateLimiter.create(trafficConfiguration.getMaxGlobalQpsRate(), 1, TimeUnit.SECONDS);
+                    RateLimiter.create(this.trafficConfiguration.getMaxGlobalQpsRate(), 1, TimeUnit.SECONDS);
         }
     }
 

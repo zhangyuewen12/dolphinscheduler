@@ -25,6 +25,7 @@ public enum QuartzSchedulerExceptionEnum implements SchedulerExceptionEnum {
     QUARTZ_UPSERT_JOB_ERROR("QUARTZ-002", "Upsert quartz job error"),
     QUARTZ_DELETE_JOB_ERROR("QUARTZ-003", "Delete quartz job error"),
     QUARTZ_SCHEDULER_SHOWDOWN_ERROR("QUARTZ-004", "Quartz Scheduler shutdown error"),
+    QUARTZ_QUERY_JOB_ERROR("QUARTZ-005", "Query quartz job error"),
     ;
 
     private final String code;

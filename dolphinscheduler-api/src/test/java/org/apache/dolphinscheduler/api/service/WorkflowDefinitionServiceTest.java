@@ -73,9 +73,11 @@ import org.apache.dolphinscheduler.dao.mapper.WorkflowDefinitionMapper;
 import org.apache.dolphinscheduler.dao.mapper.WorkflowTaskRelationMapper;
 import org.apache.dolphinscheduler.dao.model.PageListingResult;
 import org.apache.dolphinscheduler.dao.repository.TaskDefinitionLogDao;
+import org.apache.dolphinscheduler.dao.repository.WorkerGroupDao;
 import org.apache.dolphinscheduler.dao.repository.WorkflowDefinitionDao;
 import org.apache.dolphinscheduler.dao.repository.WorkflowDefinitionLogDao;
 import org.apache.dolphinscheduler.dao.utils.WorkerGroupUtils;
+import org.apache.dolphinscheduler.scheduler.api.SchedulerApi;
 import org.apache.dolphinscheduler.service.process.ProcessService;
 
 import org.apache.commons.lang3.StringUtils;
@@ -176,6 +178,12 @@ public class WorkflowDefinitionServiceTest extends BaseServiceTestTool {
     private MetricsCleanUpService metricsCleanUpService;
 
     @Mock
+    private WorkerGroupDao workerGroupDao;
+
+    @Mock
+    private WorkerGroupService workerGroupService;
+
+    @Mock
     private TaskDefinitionService taskDefinitionService;
 
     @Mock
@@ -189,6 +197,9 @@ public class WorkflowDefinitionServiceTest extends BaseServiceTestTool {
 
     @Mock
     private UserMapper userMapper;
+
+    @Mock
+    private SchedulerApi schedulerApi;
 
     protected User user;
     protected Exception exception;
@@ -1106,6 +1117,143 @@ public class WorkflowDefinitionServiceTest extends BaseServiceTestTool {
         Assertions.assertEquals(Status.PROJECT_NOT_FOUND, map.get(Constants.STATUS));
     }
 
+    @Test
+    public void testImportWorkflowDefinitionBlankJson() {
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "", "shell_task", "worker_group", "");
+        Assertions.assertEquals(Status.REQUEST_PARAMS_NOT_VALID_ERROR, result.get(Constants.STATUS));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionBlankTargetName() throws Exception {
+        String workflowJson = readWorkflowImportResource("check_successful.json");
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.REQUEST_PARAMS_NOT_VALID_ERROR, result.get(Constants.STATUS));
+        Mockito.verifyNoInteractions(projectMapper);
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionProjectNotFound() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        when(projectMapper.queryByName("test")).thenReturn(null);
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.PROJECT_NOT_FOUND, result.get(Constants.STATUS));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionNoProjectPermission() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenAnswer(invocation -> {
+            Map<String, Object> result = invocation.getArgument(2);
+            putMsg(result, Status.USER_NO_WRITE_PROJECT_PERM, user.getUserName(), project.getName());
+            return false;
+        });
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.USER_NO_WRITE_PROJECT_PERM, result.get(Constants.STATUS));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionDuplicateName() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenReturn(true);
+        stubWorkerGroupExists("worker_group");
+        when(workflowDefinitionMapper.queryAllDefinitionList(projectCode)).thenReturn(Arrays.asList(
+                importMatchedWorkflowDefinition(ReleaseState.OFFLINE),
+                importMatchedWorkflowDefinition(ReleaseState.OFFLINE)));
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.IMPORT_WORKFLOW_DEFINE_NAME_DUPLICATE, result.get(Constants.STATUS));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionOnlineNotAllowed() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenReturn(true);
+        stubWorkerGroupExists("worker_group");
+        when(workflowDefinitionMapper.queryAllDefinitionList(projectCode)).thenReturn(Lists.newArrayList(
+                importMatchedWorkflowDefinition(ReleaseState.ONLINE)));
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.IMPORT_WORKFLOW_DEFINE_ONLINE_NOT_ALLOWED, result.get(Constants.STATUS));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionWorkerGroupNotFound() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenReturn(true);
+        when(workerGroupDao.queryAllWorkerGroupNames()).thenReturn(Lists.newArrayList("other_worker_group"));
+        when(workerGroupService.getConfigWorkerGroupPageDetail()).thenReturn(new ArrayList<>());
+
+        Map<String, Object> result = processDefinitionService.importWorkflowDefinition(user, "test", "shell_task",
+                "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.WORKER_GROUP_NOT_EXIST, result.get(Constants.STATUS));
+        Mockito.verifyNoInteractions(workflowDefinitionMapper);
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionCreateWhenMissing() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        WorkflowDefinitionServiceImpl spyService = Mockito.spy(processDefinitionService);
+        Map<String, Object> successResult = new HashMap<>();
+        putMsg(successResult, Status.SUCCESS);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenReturn(true);
+        stubWorkerGroupExists("worker_group");
+        when(workflowDefinitionMapper.queryAllDefinitionList(projectCode)).thenReturn(new ArrayList<>());
+        Mockito.doReturn(successResult).when(spyService).createWorkflowDefinition(eq(user), eq(projectCode),
+                eq("shell_task"), any(String.class), any(String.class), any(String.class), any(Integer.class),
+                any(String.class), any(String.class), Mockito.isNull(String.class),
+                eq(WorkflowExecutionTypeEnum.PARALLEL));
+
+        Map<String, Object> result = spyService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.SUCCESS, result.get(Constants.STATUS));
+        Mockito.verify(spyService).createWorkflowDefinition(eq(user), eq(projectCode), eq("shell_task"),
+                any(String.class), any(String.class), any(String.class), any(Integer.class), any(String.class),
+                any(String.class), Mockito.isNull(String.class), eq(WorkflowExecutionTypeEnum.PARALLEL));
+    }
+
+    @Test
+    public void testImportWorkflowDefinitionUpdateWhenOffline() throws Exception {
+        String workflowJson = readWorkflowImportResourceWithProjectName("check_successful.json");
+        Project project = getProject(projectCode);
+        WorkflowDefinition matchedDefinition = importMatchedWorkflowDefinition(ReleaseState.OFFLINE);
+        WorkflowDefinitionServiceImpl spyService = Mockito.spy(processDefinitionService);
+        Map<String, Object> successResult = new HashMap<>();
+        putMsg(successResult, Status.SUCCESS);
+        when(projectMapper.queryByName("test")).thenReturn(project);
+        when(projectService.hasProjectAndWritePerm(eq(user), eq(project), any(Map.class))).thenReturn(true);
+        stubWorkerGroupExists("worker_group");
+        when(workflowDefinitionMapper.queryAllDefinitionList(projectCode)).thenReturn(Lists.newArrayList(matchedDefinition));
+        Mockito.doReturn(successResult).when(spyService).updateWorkflowDefinition(eq(user), eq(projectCode),
+                eq("shell_task"), eq(processDefinitionCode), any(String.class), any(String.class), any(String.class),
+                any(Integer.class), any(String.class), any(String.class), eq(WorkflowExecutionTypeEnum.PARALLEL));
+
+        Map<String, Object> result = spyService.importWorkflowDefinition(user, "test", "shell_task", "worker_group", workflowJson);
+
+        Assertions.assertEquals(Status.SUCCESS, result.get(Constants.STATUS));
+        Mockito.verify(spyService).updateWorkflowDefinition(eq(user), eq(projectCode), eq("shell_task"),
+                eq(processDefinitionCode), any(String.class), any(String.class), any(String.class),
+                any(Integer.class), any(String.class), any(String.class), eq(WorkflowExecutionTypeEnum.PARALLEL));
+    }
+
     /**
      * get mock processDefinition
      *
@@ -1121,6 +1269,22 @@ public class WorkflowDefinitionServiceTest extends BaseServiceTestTool {
         workflowDefinition.setProjectCode(projectCode);
         workflowDefinition.setVersion(1);
         return workflowDefinition;
+    }
+
+    private WorkflowDefinition importMatchedWorkflowDefinition(ReleaseState releaseState) {
+        WorkflowDefinition workflowDefinition = getWorkflowDefinition();
+        workflowDefinition.setName("shell_task");
+        workflowDefinition.setReleaseState(releaseState);
+        return workflowDefinition;
+    }
+
+    private String readWorkflowImportResourceWithProjectName(String fileName) throws IOException, URISyntaxException {
+        return readWorkflowImportResource(fileName).replace("\"projectName\" : null", "\"projectName\" : \"test\"");
+    }
+
+    private String readWorkflowImportResource(String fileName) throws IOException, URISyntaxException {
+        Path path = Paths.get(getClass().getClassLoader().getResource("workflowImport/" + fileName).toURI());
+        return new String(Files.readAllBytes(path));
     }
 
     /**
@@ -1304,5 +1468,9 @@ public class WorkflowDefinitionServiceTest extends BaseServiceTestTool {
 
         Assertions.assertEquals(Status.CREATE_WORKFLOW_LINEAGE_ERROR.getCode(), exception.getCode());
         verify(workflowLineageService).updateWorkflowLineage(eq(workflowDefinitionCode), anyList());
+    }
+
+    private void stubWorkerGroupExists(String workerGroup) {
+        when(workerGroupDao.queryAllWorkerGroupNames()).thenReturn(Lists.newArrayList(workerGroup));
     }
 }

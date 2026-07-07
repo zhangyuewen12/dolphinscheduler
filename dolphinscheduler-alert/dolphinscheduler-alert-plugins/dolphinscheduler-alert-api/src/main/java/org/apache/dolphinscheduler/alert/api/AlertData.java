@@ -17,6 +17,8 @@
 
 package org.apache.dolphinscheduler.alert.api;
 
+import java.util.Date;
+
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -45,6 +47,11 @@ public class AlertData {
      * alert content
      */
     private String content;
+
+    /**
+     * alert created time
+     */
+    private Date alertTime;
 
     /**
      * alert log

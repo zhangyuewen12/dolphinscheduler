@@ -48,6 +48,7 @@
         <module>dolphinscheduler-datasource-plugin</module>
         <module>dolphinscheduler-meter</module>
         <module>dolphinscheduler-master</module>
+        <module>dolphinscheduler-flink-monitor</module>
         <module>dolphinscheduler-worker</module>
         <module>dolphinscheduler-tools</module>
         <module>dolphinscheduler-ui</module>
@@ -63,7 +64,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <spring.boot.version>2.6.1</spring.boot.version>
+        <spring.boot.version>2.7.18</spring.boot.version>
         <java.version>1.8</java.version>
         <junit.version>5.9.0</junit.version>
         <mockito.version>3.12.4</mockito.version>

@@ -90,14 +90,15 @@ public class AppConfiguration implements WebMvcConfigurer {
 
     @Bean
     public RateLimitInterceptor createRateLimitInterceptor() {
-        return new RateLimitInterceptor(apiConfig.getTrafficControl());
+        ApiConfig.TrafficConfiguration trafficConfiguration = getTrafficConfiguration();
+        return new RateLimitInterceptor(trafficConfiguration);
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         // i18n
         registry.addInterceptor(localeChangeInterceptor());
-        ApiConfig.TrafficConfiguration trafficControl = apiConfig.getTrafficControl();
+        ApiConfig.TrafficConfiguration trafficControl = getTrafficConfiguration();
         if (trafficControl.isGlobalSwitch() || trafficControl.isTenantSwitch()) {
             registry.addInterceptor(createRateLimitInterceptor());
         }
@@ -108,6 +109,13 @@ public class AppConfiguration implements WebMvcConfigurer {
                         "/doc.html", "/swagger-ui/**", "*.html", "/ui/**", "/error", "/oauth2-provider",
                         "/redirect/login/oauth2", "/cookies", "/oidc-providers", "/oauth2/authorization/**",
                         "/login/oauth2/code/**");
+    }
+
+    private ApiConfig.TrafficConfiguration getTrafficConfiguration() {
+        if (apiConfig == null || apiConfig.getTrafficControl() == null) {
+            return new ApiConfig.TrafficConfiguration();
+        }
+        return apiConfig.getTrafficControl();
     }
 
     @Override

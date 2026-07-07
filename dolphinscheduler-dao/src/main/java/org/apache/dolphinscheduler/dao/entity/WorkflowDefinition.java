@@ -45,7 +45,8 @@ import com.google.common.base.Strings;
 @NoArgsConstructor
 @AllArgsConstructor
 @TableName("t_ds_workflow_definition")
-public class WorkflowDefinition {
+public class
+WorkflowDefinition {
 
     @TableId(value = "id", type = IdType.AUTO)
     private Integer id;

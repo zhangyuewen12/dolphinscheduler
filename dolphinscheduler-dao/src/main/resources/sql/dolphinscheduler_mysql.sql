@@ -482,7 +482,7 @@ CREATE TABLE `t_ds_workflow_definition_log` (
 -- ----------------------------
 -- Table structure for t_ds_task_definition
 -- ----------------------------
-DROP TABLE IF EXISTS `t_ds_task_definition`;
+DROP TABLE IF EXISTS `··`;
 CREATE TABLE `t_ds_task_definition` (
   `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'self-increasing id',
   `code` bigint(20) NOT NULL COMMENT 'encoding',
